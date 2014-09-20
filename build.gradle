@@ -1,0 +1,78 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        maven {
+            name = "forge"
+            url = "http://files.minecraftforge.net/maven"
+        }
+        maven {
+            name = "sonatype"
+            url = "https://oss.sonatype.org/content/repositories/snapshots/"
+        }
+    }
+    dependencies {
+        classpath 'net.minecraftforge.gradle:ForgeGradle:1.2-SNAPSHOT'
+    }
+}
+
+apply plugin: 'scala'
+apply plugin: 'forge'
+apply plugin: 'maven-publish'
+
+file "build.properties" withReader {
+    def prop = new Properties()
+    prop.load(it)
+    ext.config = new ConfigSlurper().parse prop
+}
+
+version = "${config.mod.version}"
+group= "li.cil.cc"
+archivesBaseName = "CraftingCosts"
+
+if (System.getenv("BUILD_NUMBER") != null)
+    version += ".${System.getenv("BUILD_NUMBER")}"
+
+ext.simpleVersion = version
+version = "MC${config.minecraft.version}-${project.version}"
+
+repositories {
+    maven {
+        name = "chickenbones"
+        url = "http://chickenbones.net/maven/"
+    }
+    maven {
+        name = "mobius"
+        url = "http://mobiusstrip.eu/maven"
+    }
+}
+
+configurations {
+    provided
+    compile.extendsFrom provided
+}
+
+dependencies {
+    provided "codechicken:CodeChickenLib:${config.minecraft.version}-${config.ccl.version}:dev"
+    provided "codechicken:NotEnoughItems:${config.minecraft.version}-${config.nei.version}:dev"
+    provided "mcp.mobius.waila:Waila:1.5.+:dev"
+}
+
+idea.module.scopes.PROVIDED.plus += configurations.provided
+eclipse.classpath.plusConfigurations += configurations.provided
+
+minecraft {
+    version = "${config.minecraft.version}-${config.forge.version}"
+
+    replaceIn "li/cil/cc/CraftingCosts.scala"
+    replace "@VERSION@", project.simpleVersion
+}
+
+processResources {
+    from(sourceSets.main.resources.srcDirs) {
+        include 'mcmod.info'
+        expand 'version': project.simpleVersion, 'mcversion': config.minecraft.version
+    }
+    from(sourceSets.main.resources.srcDirs) {
+        exclude 'mcmod.info'
+    }
+}

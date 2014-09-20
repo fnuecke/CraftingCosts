@@ -1,0 +1,10 @@
+[{
+  "modid": "CraftingCosts",
+  "name": "CraftingCosts",
+  "description": "Addon for NotEnoughItems for showing overall costs for crafting items.",
+  "version": "${version}",
+  "mcversion": "${mcversion}",
+  "updateUrl": "",
+  "authorList": ["Sangar"],
+  "requiredMods": ["NotEnoughItems"]
+}]
