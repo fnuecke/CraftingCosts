@@ -5,10 +5,10 @@ import java.util
 import codechicken.nei.guihook.{GuiContainerManager, IContainerTooltipHandler}
 import codechicken.nei.recipe.GuiCraftingRecipe
 import codechicken.nei.{NEIClientUtils, NEIServerUtils}
-import cpw.mods.fml.common.registry.GameData
-import cpw.mods.fml.common.{ModContainer, Mod}
+import cpw.mods.fml.common.Mod
 import cpw.mods.fml.common.Mod.EventHandler
-import cpw.mods.fml.common.event.{FMLPreInitializationEvent, FMLPostInitializationEvent}
+import cpw.mods.fml.common.event.{FMLPostInitializationEvent, FMLPreInitializationEvent}
+import cpw.mods.fml.common.registry.GameData
 import net.minecraft.client.gui.inventory.GuiContainer
 import net.minecraft.item.ItemStack
 import net.minecraft.util.StatCollector
