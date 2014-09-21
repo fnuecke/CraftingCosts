@@ -170,11 +170,11 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
         else {
           val allRecipes = GuiCraftingRecipe.craftinghandlers.
             // Get instances that can create this stack -> recipeHandler
-            map(craftingHandler => craftingHandler.getRecipeHandler("item", stack)).
+            map(craftingHandler => craftingHandler.synchronized(craftingHandler.getRecipeHandler("item", stack))).
             // Get actual, valid recipe handlers -> recipeHandler
-            filter(recipeHandler => recipeHandler != null && recipeHandler.numRecipes() > 0).
+            filter(recipeHandler => recipeHandler != null && recipeHandler.synchronized(recipeHandler.numRecipes()) > 0).
             // Get ingredients from underlying recipes -> (PositionedStack[], output)[]
-            flatMap(recipeHandler => (0 until recipeHandler.numRecipes()).map(index => (recipeHandler.getIngredientStacks(index).filter(positionedStackSize(_) > 0), recipeHandler.getResultStack(index)))).
+            flatMap(recipeHandler => (0 until recipeHandler.numRecipes()).map(index => recipeHandler.synchronized((recipeHandler.getIngredientStacks(index).filter(positionedStackSize(_) > 0), recipeHandler.getResultStack(index))))).
             // Filter bad outputs... some TE machines return recipes that are actually "fluid" ones, not "item" ones, leading to `null` results.
             filter(recipe => recipe._2 != null && (recipe._2.item != null || recipe._2.items != null)).
             // Make sure we have ingredients -> (PositionedStack[], output)[]
