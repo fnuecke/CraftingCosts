@@ -90,7 +90,9 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
     "^minecraft:map$",
     "^minecraft:skull$",
     "^minecraft:nether_star$",
-    "^minecraft:record_.*$"
+    "^minecraft:record_.*$",
+
+    "^ThermalExpansion:Rockwool$"
   )
 
   // Overall costs, list of (stack, amount). Used to cache cost results, to
@@ -100,11 +102,11 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
 
   // Read settings.
   override def preInit(config: Configuration) {
-      blackList ++= config.get("common", "blacklist", blackList.toArray,
-        "List of items for which not to display costs. These are regular expressions, e.g. `^OpenComputers:.*$`.").
-        getStringList
+    blackList ++= config.get("common", "blacklist", blackList.toArray,
+      "List of items for which not to display costs. These are regular expressions, e.g. `^OpenComputers:.*$`.").
+      getStringList
 
-      config.save()
+    config.save()
   }
 
   // Register as tooltip handler with NEI.
@@ -112,7 +114,7 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
 
   // Utility method for synchronized and fuzzy comparing cache access.
   private def cachedCosts(stack: ItemStack) = costs.synchronized(costs.find({
-    case (key, value) => NEIServerUtils.areStacksSameTypeCrafting(key, stack)
+    case (key, value) => NEIServerUtils.areStacksSameType(key, stack)
   })).map(_._2)
 
   // Utility method for adding stuff to the cache, simplifying costs.
@@ -123,7 +125,9 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
         // Not in cache yet, get actual values as a future (computation may
         // take a while) and simplify results.
         val future = Future {
-          costs.synchronized { /* Wait for us to be inserted into the cache. */ }
+          costs.synchronized {
+            /* Wait for us to be inserted into the cache. */
+          }
           val (stackCosts, complexity) = try callback() catch {
             case t: Throwable =>
               t.printStackTrace()
@@ -131,11 +135,11 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
           }
           // Get the list of unique stacks in the ingredients.
           val uniqueStacks = stackCosts.map(_._1).foldLeft(Seq.empty[ItemStack])((acc, stack) =>
-            if (!acc.exists(s => NEIServerUtils.areStacksSameTypeCrafting(s, stack))) acc :+ stack
+            if (!acc.exists(s => NEIServerUtils.areStacksSameType(s, stack))) acc :+ stack
             else acc)
           // Sum up costs of the unique stacks in the ingredients and return that list.
           (uniqueStacks.map(stack => (stack, stackCosts.foldLeft(0.0)((acc, cost) =>
-            if (NEIServerUtils.areStacksSameTypeCrafting(cost._1, stack)) acc + cost._2
+            if (NEIServerUtils.areStacksSameType(cost._1, stack)) acc + cost._2
             else acc))).sortBy(_._1.getUnlocalizedName).toIterable, complexity)
         }
         costs += stack -> future
@@ -157,7 +161,7 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
       Option(ps.item).fold(ps.items.find(NEIServerUtils.areStacksSameTypeCrafting(_, stack)).fold(Int.MaxValue)(_.stackSize))(_.stackSize)
     }
 
-    if (visited.exists(vs => NEIServerUtils.areStacksSameTypeCrafting(vs, stack))) (Iterable((stack, 1.0)), Int.MaxValue)
+    if (visited.exists(vs => NEIServerUtils.areStacksSameType(vs, stack))) (Iterable((stack, 1.0)), Int.MaxValue)
     else cachedCosts(stack) match {
       case Some(value) if value.isCompleted => Await.result(value, Duration.Inf)
       case _ =>
@@ -177,6 +181,8 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
             flatMap(recipeHandler => (0 until recipeHandler.numRecipes()).map(index => recipeHandler.synchronized((recipeHandler.getIngredientStacks(index).filter(positionedStackSize(_) > 0), recipeHandler.getResultStack(index))))).
             // Filter bad outputs... some TE machines return recipes that are actually "fluid" ones, not "item" ones, leading to `null` results.
             filter(recipe => recipe._2 != null && (recipe._2.item != null || recipe._2.items != null)).
+            // Only take recipes where the stack is the *primary* result (secondaries are usually percentage chances).
+            filter(recipe => recipe._2.items == null || NEIServerUtils.areStacksSameType(recipe._2.items(0), stack)).
             // Make sure we have ingredients -> (PositionedStack[], output)[]
             filter(_._1.size > 0).
             // Select ingredient with minimal recipe for each ingredient -> (ItemStack[], output)[]
@@ -203,7 +209,7 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
           recipe match {
             case Some((stacks, output)) if positionedStackSize(output) != Int.MaxValue =>
               // Got a valid result, adjust individual costs based on output count.
-              val inputs = stacks.map(computeCosts(_, visited :+ stack))
+              val inputs = stacks.par.map(computeCosts(_, visited :+ stack)).toArray
               val ingredients = inputs.flatMap(_._1).map(cost => (cost._1, cost._2 / positionedStackSize(output).toDouble))
               val depth = inputs.map(_._2).max + 1
               tryCacheCosts(stack, () => (ingredients, depth))
@@ -239,7 +245,7 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
         case Some(Success((stackCosts, _))) =>
           // Yay, we have some cost information for the stack, see if it's not
           // the identity, in which case there are no recipes.
-          if (stackCosts.size > 0 && (stackCosts.size != 1 || stackCosts.head._2 != 1.0 || !NEIServerUtils.areStacksSameTypeCrafting(stackCosts.head._1, stack))) {
+          if (stackCosts.size > 0 && (stackCosts.size != 1 || stackCosts.head._2 != 1.0 || !NEIServerUtils.areStacksSameType(stackCosts.head._1, stack))) {
             if (NEIClientUtils.altKey()) {
               tooltip.add(StatCollector.translateToLocal("cc.tooltip.Materials"))
               for ((ingredient, amount) <- stackCosts) {
