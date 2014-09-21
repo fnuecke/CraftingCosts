@@ -5,8 +5,6 @@ import cpw.mods.fml.common.event.{FMLPostInitializationEvent, FMLPreInitializati
 import cpw.mods.fml.common.{Mod, SidedProxy}
 import net.minecraftforge.common.config.Configuration
 
-import scala.collection.mutable
-
 @Mod(modid = CraftingCosts.ID, name = CraftingCosts.Name, version = CraftingCosts.Version,
   dependencies = "required-after:NotEnoughItems", modLanguage = "scala", useMetadata = true)
 object CraftingCosts {
@@ -19,20 +17,9 @@ object CraftingCosts {
   @SidedProxy(clientSide = "li.cil.cc.ClientProxy", serverSide = "li.cil.cc.CommonProxy")
   var proxy: CommonProxy = null
 
-  val blackList = mutable.Set.empty[String]
-
   @EventHandler
-  def preInit(e: FMLPreInitializationEvent) {
-    val config = new Configuration(e.getSuggestedConfigurationFile)
-
-    blackList ++= config.get("common", "blacklist", Array.empty[String],
-      "List of items for which not to display costs. These are regular expressions, e.g. `^OpenComputers:.*$`.").
-      getStringList
-
-    config.save()
-  }
+  def preInit(e: FMLPreInitializationEvent) = proxy.preInit(new Configuration(e.getSuggestedConfigurationFile))
 
   @EventHandler
   def postInit(e: FMLPostInitializationEvent) = proxy.postInit()
-
 }
