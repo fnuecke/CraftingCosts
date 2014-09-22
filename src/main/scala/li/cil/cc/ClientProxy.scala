@@ -7,10 +7,11 @@ import codechicken.nei.guihook.{GuiContainerManager, IContainerTooltipHandler}
 import codechicken.nei.recipe.GuiCraftingRecipe
 import codechicken.nei.{NEIClientUtils, NEIServerUtils, PositionedStack}
 import cpw.mods.fml.common.registry.GameData
+import cpw.mods.fml.common.versioning.{VersionRange, DefaultArtifactVersion}
 import net.minecraft.client.gui.inventory.GuiContainer
 import net.minecraft.item.ItemStack
 import net.minecraft.util.StatCollector
-import net.minecraftforge.common.config.Configuration
+import net.minecraftforge.common.config.{Property, Configuration}
 
 import scala.collection.convert.WrapAsScala._
 import scala.collection.mutable
@@ -21,7 +22,7 @@ import scala.util.{Failure, Success}
 
 class ClientProxy extends CommonProxy with IContainerTooltipHandler {
   // List of items not to show material costs for (e.g. if mod does it itself).
-  val blackList = mutable.Set(
+  val terminals = mutable.Set(
     "^minecraft:grass$",
     "^minecraft:dirt$",
     "^minecraft:cobblestone$",
@@ -108,14 +109,23 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
 
   // Read settings.
   override def preInit(config: Configuration) {
-    blackList ++= config.get("common", "blacklist", blackList.toArray,
-      "List of items for which not to display costs. These are regular expressions, e.g. `^OpenComputers:.*$`.").
-      getStringList
+    val version = config.get("common", "version", "0.0.0",
+      "The version of the mod that wrote this config, used to upgrade configs on default changes.")
+    implicit def toArtifactVersion(v: Property) = new DefaultArtifactVersion(v.getString)
+
+    // Read in black list, unless when updating from 1.0.0.
+    val blacklist = config.get("common", "blacklist", terminals.toArray,
+      "List of items for which not to display costs. These are regular expressions, e.g. `^OpenComputers:.*$`.")
+    if (VersionRange.createFromVersionSpec("[1.0.1,)").containsVersion(version)) {
+      terminals.clear()
+      terminals ++= blacklist.getStringList
+    }
 
     timeout = config.get("common", "timeout", timeout,
       "The timeout for crafting cost computation for a single item, in seconds.").
       getDouble max 0.1
 
+    version.set(CraftingCosts.Version)
     config.save()
   }
 
@@ -161,7 +171,7 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
   // Check if a stack is blacklisted, based on its items registry name.
   private def isBlackListed(stack: ItemStack) = {
     GameData.getItemRegistry.getNameForObject(stack.getItem) match {
-      case name: String => blackList.exists(name.matches)
+      case name: String => terminals.exists(name.matches)
       case _ => false
     }
   }
