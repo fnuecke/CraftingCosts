@@ -4,20 +4,21 @@ import java.util
 import java.util.concurrent.ConcurrentLinkedQueue
 
 import codechicken.nei.guihook.{GuiContainerManager, IContainerTooltipHandler}
-import codechicken.nei.recipe.GuiCraftingRecipe
+import codechicken.nei.recipe.{GuiCraftingRecipe, TemplateRecipeHandler}
 import codechicken.nei.{NEIClientUtils, NEIServerUtils, PositionedStack}
 import cpw.mods.fml.common.registry.GameData
-import cpw.mods.fml.common.versioning.{VersionRange, DefaultArtifactVersion}
+import cpw.mods.fml.common.versioning.{DefaultArtifactVersion, VersionRange}
 import net.minecraft.client.gui.inventory.GuiContainer
 import net.minecraft.item.ItemStack
 import net.minecraft.util.StatCollector
-import net.minecraftforge.common.config.{Property, Configuration}
+import net.minecraftforge.common.config.{Configuration, Property}
+import org.apache.commons.lang3.reflect.FieldUtils
 
 import scala.collection.convert.WrapAsScala._
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
-import scala.concurrent.{Promise, Await, Future}
+import scala.concurrent.{Await, Future, Promise}
 import scala.util.{Failure, Success}
 
 class ClientProxy extends CommonProxy with IContainerTooltipHandler {
@@ -96,7 +97,13 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
   )
 
   // Timeout (in milliseconds) for cost computation for a single item.
-  private var timeout = 5.0
+  private var timeout = 10.0
+
+  // Maximum recipe complexity to follow up on, helps avoid cycles.
+  private var maxDepth = 16
+
+  // Number of recipe lookups to perform per frame.
+  private var lookupsPerFrame = 50
 
   // Overall costs, list of (stack, amount). Used to cache cost results, to
   // avoid having to recompute them all the time, which can be incredibly slow
@@ -106,6 +113,11 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
   // Pending recipe requests, synchronized to client thread to avoid concurrent
   // modification exceptions in combination with other NEI addons.
   private val recipeRequests = new ConcurrentLinkedQueue[() => Unit]
+
+  // Class of TE's machine recipe handler. Used to access secondary inputs.
+  private lazy val thermalExpansionRecipeHandler = try Option(Class.forName("thermalexpansion.plugins.nei.handlers.RecipeHandlerBase$NEIRecipeBase")) catch {
+    case _: Throwable => None
+  }
 
   // Read settings.
   override def preInit(config: Configuration) {
@@ -124,6 +136,14 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
     timeout = config.get("common", "timeout", timeout,
       "The timeout for crafting cost computation for a single item, in seconds.").
       getDouble max 0.1
+
+    maxDepth = config.get("common", "maxDepth", maxDepth,
+      "The maximum complexity to allow when computing costs.").
+      getInt max 1
+
+    lookupsPerFrame = config.get("common", "lookupsPerFrame", lookupsPerFrame,
+      "The maximum number of recipes to query from NEI per tick. Higher values may make the game lag temporarily when computing complex or multiple recipes.").
+      getInt max 1
 
     version.set(CraftingCosts.Version)
     config.save()
@@ -179,11 +199,11 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
   // Performs actual computation of item costs, uses cache where possible.
   private def computeCosts(stack: ItemStack, running: () => Boolean, visited: Seq[ItemStack] = Seq.empty): (Iterable[(ItemStack, Double)], Int) = {
     def positionedStackSize(ps: PositionedStack) = {
-      Option(ps.item).fold(ps.items.find(NEIServerUtils.areStacksSameTypeCrafting(_, stack)).fold(Int.MaxValue)(_.stackSize))(_.stackSize)
+      Option(ps.item).fold(ps.items.find(NEIServerUtils.areStacksSameTypeCrafting(_, stack)).fold(Int.MinValue)(_.stackSize))(_.stackSize)
     }
 
     if (!running()) (Iterable((stack, 1.0)), 1)
-    else if (visited.exists(vs => NEIServerUtils.areStacksSameType(vs, stack))) (Iterable((stack, 1.0)), Int.MaxValue)
+    else if (visited.exists(vs => NEIServerUtils.areStacksSameType(vs, stack)) || visited.length > maxDepth) (Iterable((stack, 1.0)), Int.MaxValue)
     else cachedCosts(stack) match {
       case Some(value) if value.isCompleted => Await.result(value, Duration.Inf)
       case _ =>
@@ -203,7 +223,18 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
                 // Get actual, valid recipe handlers -> recipeHandler
                 filter(recipeHandler => recipeHandler != null && recipeHandler.numRecipes() > 0).
                 // Get ingredients from underlying recipes -> (PositionedStack[], output)[]
-                flatMap(recipeHandler => (0 until recipeHandler.numRecipes()).map(index => (recipeHandler.getIngredientStacks(index).filter(positionedStackSize(_) > 0), recipeHandler.getResultStack(index)))))
+                flatMap(recipeHandler => (0 until recipeHandler.numRecipes()).map(index => {
+                recipeHandler match {
+                  case tpl: TemplateRecipeHandler if thermalExpansionRecipeHandler.exists(_.isAssignableFrom(tpl.arecipes(index).getClass)) =>
+                    val recipe = tpl.arecipes(index)
+                    val input = getPrivateValue[PositionedStack](recipe, "input")
+                    val secondaryInput = getPrivateValue[PositionedStack](recipe, "secondaryInput")
+                    val output = getPrivateValue[PositionedStack](recipe, "output")
+                    (mutable.Buffer(input, secondaryInput).filter(_ != null), output)
+                  case _ =>
+                    (recipeHandler.getIngredientStacks(index).filter(positionedStackSize(_) > 0), recipeHandler.getResultStack(index))
+                }
+              })))
           })
           val allRecipes = Await.result(promise.future, Duration.Inf).
             // Filter bad outputs... some TE machines return recipes that are actually "fluid" ones, not "item" ones, leading to `null` results.
@@ -234,7 +265,7 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
             headOption
 
           recipe match {
-            case Some((stacks, output)) if positionedStackSize(output) != Int.MaxValue =>
+            case Some((stacks, output)) if positionedStackSize(output) > 0 =>
               // Got a valid result, adjust individual costs based on output count.
               val inputs = stacks.par.map(computeCosts(_, running, visited :+ stack)).toArray
               val ingredients = inputs.flatMap(_._1).map(cost => (cost._1, cost._2 / positionedStackSize(output).toDouble))
@@ -252,6 +283,9 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
     }
   }
 
+  private def getPrivateValue[T](obj: AnyRef, name: String) =
+    FieldUtils.getField(obj.getClass, name, true).get(obj).asInstanceOf[T]
+
   // Implementation of IContainerTooltipHandler.
 
   override def handleTooltip(gui: GuiContainer, x: Int, y: Int, tooltip: util.List[String]) = tooltip
@@ -259,9 +293,12 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
   override def handleItemDisplayName(gui: GuiContainer, stack: ItemStack, tooltip: util.List[String]) = tooltip
 
   override def handleItemTooltip(gui: GuiContainer, stack: ItemStack, x: Int, y: Int, tooltip: util.List[String]) = {
-    // Process our queue one entry at a time to avoid lagging/freezing the
-    // client. This is called very frequently, so that should be fine.
-    Option(recipeRequests.poll()).foreach(_())
+    // Process the queue of recipe requests, as many per frame as we're allowed
+    // to (some complex recipes fail to complete when we go one per tick, due
+    // to the timeout kicking in, otherwise).
+    for (_ <- 0 until lookupsPerFrame) {
+      Option(recipeRequests.poll()).foreach(_())
+    }
 
     // Do we have anything at all, and should we show the costs for it?
     if (stack != null && !isBlackListed(stack)) {
@@ -297,6 +334,9 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
           // Still waiting for the costs to be computed...
           if (NEIClientUtils.altKey()) {
             tooltip.add(StatCollector.translateToLocal("cc.tooltip.Computing"))
+          }
+          else {
+            tooltip.add(StatCollector.translateToLocal("cc.tooltip.MaterialCosts"))
           }
       }
     }
