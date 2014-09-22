@@ -1,6 +1,7 @@
 package li.cil.cc
 
 import java.util
+import java.util.concurrent.ConcurrentLinkedQueue
 
 import codechicken.nei.guihook.{GuiContainerManager, IContainerTooltipHandler}
 import codechicken.nei.recipe.GuiCraftingRecipe
@@ -15,7 +16,7 @@ import scala.collection.convert.WrapAsScala._
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
-import scala.concurrent.{Await, Future}
+import scala.concurrent.{Promise, Await, Future}
 import scala.util.{Failure, Success}
 
 class ClientProxy extends CommonProxy with IContainerTooltipHandler {
@@ -90,21 +91,30 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
     "^minecraft:map$",
     "^minecraft:skull$",
     "^minecraft:nether_star$",
-    "^minecraft:record_.*$",
-
-    "^ThermalExpansion:Rockwool$"
+    "^minecraft:record_.*$"
   )
+
+  // Timeout (in milliseconds) for cost computation for a single item.
+  private var timeout = 5.0
 
   // Overall costs, list of (stack, amount). Used to cache cost results, to
   // avoid having to recompute them all the time, which can be incredibly slow
   // for complicated recipes / many possible recipes.
   private val costs = mutable.Map.empty[ItemStack, Future[(Iterable[(ItemStack, Double)], Int)]]
 
+  // Pending recipe requests, synchronized to client thread to avoid concurrent
+  // modification exceptions in combination with other NEI addons.
+  private val recipeRequests = new ConcurrentLinkedQueue[() => Unit]
+
   // Read settings.
   override def preInit(config: Configuration) {
     blackList ++= config.get("common", "blacklist", blackList.toArray,
       "List of items for which not to display costs. These are regular expressions, e.g. `^OpenComputers:.*$`.").
       getStringList
+
+    timeout = config.get("common", "timeout", timeout,
+      "The timeout for crafting cost computation for a single item, in seconds.").
+      getDouble max 0.1
 
     config.save()
   }
@@ -118,17 +128,18 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
   })).map(_._2)
 
   // Utility method for adding stuff to the cache, simplifying costs.
-  private def tryCacheCosts(stack: ItemStack, callback: () => (Iterable[(ItemStack, Double)], Int)) = {
+  private def tryCacheCosts(stack: ItemStack, callback: (() => Boolean) => (Iterable[(ItemStack, Double)], Int)) = {
     costs.synchronized(cachedCosts(stack) match {
       case Some(value) => value
       case _ =>
         // Not in cache yet, get actual values as a future (computation may
         // take a while) and simplify results.
+        val started = System.currentTimeMillis()
         val future = Future {
           costs.synchronized {
-            /* Wait for us to be inserted into the cache. */
+            // Wait for us to be inserted into the cache.
           }
-          val (stackCosts, complexity) = try callback() catch {
+          val (stackCosts, complexity) = try callback(() => System.currentTimeMillis() - started < (timeout * 1000)) catch {
             case t: Throwable =>
               t.printStackTrace()
               throw t
@@ -156,29 +167,35 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
   }
 
   // Performs actual computation of item costs, uses cache where possible.
-  private def computeCosts(stack: ItemStack, visited: Seq[ItemStack] = Seq.empty): (Iterable[(ItemStack, Double)], Int) = {
+  private def computeCosts(stack: ItemStack, running: () => Boolean, visited: Seq[ItemStack] = Seq.empty): (Iterable[(ItemStack, Double)], Int) = {
     def positionedStackSize(ps: PositionedStack) = {
       Option(ps.item).fold(ps.items.find(NEIServerUtils.areStacksSameTypeCrafting(_, stack)).fold(Int.MaxValue)(_.stackSize))(_.stackSize)
     }
 
-    if (visited.exists(vs => NEIServerUtils.areStacksSameType(vs, stack))) (Iterable((stack, 1.0)), Int.MaxValue)
+    if (!running()) (Iterable((stack, 1.0)), 1)
+    else if (visited.exists(vs => NEIServerUtils.areStacksSameType(vs, stack))) (Iterable((stack, 1.0)), Int.MaxValue)
     else cachedCosts(stack) match {
       case Some(value) if value.isCompleted => Await.result(value, Duration.Inf)
       case _ =>
         if (isBlackListed(stack)) {
           val ingredients = Iterable((stack, 1.0))
           val depth = 1
-          tryCacheCosts(stack, () => (ingredients, depth))
+          tryCacheCosts(stack, (_) => (ingredients, depth))
           (ingredients, depth)
         }
         else {
-          val allRecipes = GuiCraftingRecipe.craftinghandlers.
-            // Get instances that can create this stack -> recipeHandler
-            map(craftingHandler => craftingHandler.synchronized(craftingHandler.getRecipeHandler("item", stack))).
-            // Get actual, valid recipe handlers -> recipeHandler
-            filter(recipeHandler => recipeHandler != null && recipeHandler.synchronized(recipeHandler.numRecipes()) > 0).
-            // Get ingredients from underlying recipes -> (PositionedStack[], output)[]
-            flatMap(recipeHandler => (0 until recipeHandler.numRecipes()).map(index => recipeHandler.synchronized((recipeHandler.getIngredientStacks(index).filter(positionedStackSize(_) > 0), recipeHandler.getResultStack(index))))).
+          val promise = Promise[mutable.Buffer[(mutable.Buffer[PositionedStack], PositionedStack)]]()
+          recipeRequests.add(() => {
+            promise.success(
+              GuiCraftingRecipe.craftinghandlers.
+                // Get instances that can create this stack -> recipeHandler
+                map(craftingHandler => craftingHandler.getRecipeHandler("item", stack)).
+                // Get actual, valid recipe handlers -> recipeHandler
+                filter(recipeHandler => recipeHandler != null && recipeHandler.numRecipes() > 0).
+                // Get ingredients from underlying recipes -> (PositionedStack[], output)[]
+                flatMap(recipeHandler => (0 until recipeHandler.numRecipes()).map(index => (recipeHandler.getIngredientStacks(index).filter(positionedStackSize(_) > 0), recipeHandler.getResultStack(index)))))
+          })
+          val allRecipes = Await.result(promise.future, Duration.Inf).
             // Filter bad outputs... some TE machines return recipes that are actually "fluid" ones, not "item" ones, leading to `null` results.
             filter(recipe => recipe._2 != null && (recipe._2.item != null || recipe._2.items != null)).
             // Only take recipes where the stack is the *primary* result (secondaries are usually percentage chances).
@@ -186,9 +203,9 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
             // Make sure we have ingredients -> (PositionedStack[], output)[]
             filter(_._1.size > 0).
             // Select ingredient with minimal recipe for each ingredient -> (ItemStack[], output)[]
-            map(recipe => (recipe._1.map(ingredient => ingredient.items.sortBy(computeCosts(_, visited :+ stack)._2).head), recipe._2)).
+            map(recipe => (recipe._1.map(ingredient => ingredient.items.sortBy(computeCosts(_, running, visited :+ stack)._2).head), recipe._2)).
             // Get the maximum cost of any ingredient, for cycle detection and sorting -> ((ItemStack[], output)[], complexity)
-            map(recipe => (recipe, recipe._1.map(computeCosts(_, visited :+ stack)._2).max))
+            map(recipe => (recipe, recipe._1.map(computeCosts(_, running, visited :+ stack)._2).max))
 
           val sortedRecipes = allRecipes.
             // Ignore recipes that contain cycles.
@@ -209,10 +226,10 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
           recipe match {
             case Some((stacks, output)) if positionedStackSize(output) != Int.MaxValue =>
               // Got a valid result, adjust individual costs based on output count.
-              val inputs = stacks.par.map(computeCosts(_, visited :+ stack)).toArray
+              val inputs = stacks.par.map(computeCosts(_, running, visited :+ stack)).toArray
               val ingredients = inputs.flatMap(_._1).map(cost => (cost._1, cost._2 / positionedStackSize(output).toDouble))
               val depth = inputs.map(_._2).max + 1
-              tryCacheCosts(stack, () => (ingredients, depth))
+              tryCacheCosts(stack, (_) => (ingredients, depth))
               (ingredients, depth)
             case _ =>
               // If we have nothing yet, but had some recipes, we hit a cycle.
@@ -232,6 +249,11 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
   override def handleItemDisplayName(gui: GuiContainer, stack: ItemStack, tooltip: util.List[String]) = tooltip
 
   override def handleItemTooltip(gui: GuiContainer, stack: ItemStack, x: Int, y: Int, tooltip: util.List[String]) = {
+    // Process our queue one entry at a time to avoid lagging/freezing the
+    // client. This is called very frequently, so that should be fine.
+    Option(recipeRequests.poll()).foreach(_())
+
+    // Do we have anything at all, and should we show the costs for it?
     if (stack != null && !isBlackListed(stack)) {
       // We do a bit of caching because recipe trees can be painfully complex,
       // so recomputing everything all the time is not an option. Here we check
@@ -240,7 +262,7 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
       // or even freezing the client).
       (cachedCosts(stack) match {
         case Some(value) => value
-        case _ => tryCacheCosts(stack, () => computeCosts(stack))
+        case _ => tryCacheCosts(stack, (running) => computeCosts(stack, running))
       }).value match {
         case Some(Success((stackCosts, _))) =>
           // Yay, we have some cost information for the stack, see if it's not
