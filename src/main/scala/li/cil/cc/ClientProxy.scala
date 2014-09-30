@@ -93,7 +93,11 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
     "^minecraft:map$",
     "^minecraft:skull$",
     "^minecraft:nether_star$",
-    "^minecraft:record_.*$"
+    "^minecraft:record_.*$",
+
+    "^IC2:itemFluidCell$",
+    "^gregtech:gt.blockgranites$",
+    "^gregtech:gt.blockores$"
   )
 
   // Timeout (in milliseconds) for cost computation for a single item.
@@ -132,6 +136,12 @@ class ClientProxy extends CommonProxy with IContainerTooltipHandler {
       terminals.clear()
       terminals ++= blacklist.getStringList
     }
+    if (VersionRange.createFromVersionSpec("(,1.0.2]").containsVersion(version)) {
+      terminals += "^IC2:itemFluidCell$"
+      terminals += "^gregtech:gt.blockores$"
+      terminals += "^gregtech:gt.blockgranites$"
+    }
+    blacklist.set(terminals.toArray)
 
     timeout = config.get("common", "timeout", timeout,
       "The timeout for crafting cost computation for a single item, in seconds.").
