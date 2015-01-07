@@ -1,6 +1,12 @@
 # This is the english master file for localizations. It will always be the most
 # up-to-date version, so other localizations should be based on this one.
 
-cc.tooltip.Computing=§7Computing...
-cc.tooltip.MaterialCosts=§7Hold [§fAlt§7] for material costs.
+# Tooltips
+cc.tooltip.Computing=§7Computing: %s%%.
+cc.tooltip.MaterialCosts=§7Hold [§f%s§7] for material costs.
 cc.tooltip.Materials=§7Materials:
+
+# Keybinds
+key.materialCosts=Show material costs
+key.itemDescriptor=Show item descriptor
+key.copyItemDescriptor=Copy item descriptor to clipboard
