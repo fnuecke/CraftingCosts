@@ -2,7 +2,6 @@
 # up-to-date version, so other localizations should be based on this one.
 
 # Tooltips
-cc.tooltip.Computing=§7Computing: %s%%.
 cc.tooltip.MaterialCosts=§7Hold [§f%s§7] for material costs.
 cc.tooltip.Materials=§7Materials:
 

@@ -17,7 +17,7 @@ buildscript {
 
 apply plugin: 'scala'
 apply plugin: 'forge'
-apply plugin: 'maven-publish'
+apply plugin: 'idea'
 
 file "build.properties" withReader {
     def prop = new Properties()
@@ -26,14 +26,40 @@ file "build.properties" withReader {
 }
 
 version = "${config.mod.version}"
-group= "li.cil.cc"
+group = "li.cil.cc"
 archivesBaseName = "CraftingCosts"
+
+def getGitRef() {
+  try {
+    def stdout = new ByteArrayOutputStream()
+    exec {
+      commandLine 'git', 'rev-parse', '--short', 'HEAD'
+      standardOutput = stdout
+    }
+    return stdout.toString().trim()
+  } catch (Throwable e) {
+    return "unknown"
+  }
+}
 
 if (System.getenv("BUILD_NUMBER") != null)
     version += ".${System.getenv("BUILD_NUMBER")}"
+else
+    version += "-" + getGitRef()
+
+if (config.mod.subversion != null && config.mod.subversion != "")
+    version += "-${config.mod.subversion}"
 
 ext.simpleVersion = version
 version = "MC${config.minecraft.version}-${project.version}"
+
+if (JavaVersion.current().isJava8Compatible()) {
+    allprojects {
+        tasks.withType(Javadoc) {
+            options.addStringOption('Xdoclint:none', '-quiet')
+        }
+    }
+}
 
 repositories {
     maven {
@@ -52,18 +78,16 @@ configurations {
 }
 
 dependencies {
-    provided "codechicken:CodeChickenLib:${config.minecraft.version}-${config.ccl.version}:dev"
+//    provided "codechicken:CodeChickenLib:${config.minecraft.version}-${config.ccl.version}:dev"
     provided "codechicken:NotEnoughItems:${config.minecraft.version}-${config.nei.version}:dev"
-    provided "mcp.mobius.waila:Waila:1.5.+:dev"
 }
 
-idea.module.scopes.PROVIDED.plus += configurations.provided
-eclipse.classpath.plusConfigurations += configurations.provided
+idea.module.scopes.PROVIDED.plus += [configurations.provided]
 
 minecraft {
     version = "${config.minecraft.version}-${config.forge.version}"
+    runDir = "run"
 
-    replaceIn "li/cil/cc/CraftingCosts.scala"
     replace "@VERSION@", project.simpleVersion
 }
 
@@ -74,5 +98,11 @@ processResources {
     }
     from(sourceSets.main.resources.srcDirs) {
         exclude 'mcmod.info'
+    }
+}
+
+idea {
+    module {
+        outputDir = file('build/classes/main')
     }
 }

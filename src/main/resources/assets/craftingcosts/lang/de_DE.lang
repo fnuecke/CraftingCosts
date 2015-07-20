@@ -1,3 +1,8 @@
-cc.tooltip.Computing=§7Berechne...
-cc.tooltip.MaterialCosts=§7Halte [§fAlt§7] gedrückt für Materialkosten.
+# Tooltips
+cc.tooltip.MaterialCosts=§7Halte [§f%s§7] gedrückt für Materialkosten.
 cc.tooltip.Materials=§7Materialien:
+
+# Keybinds
+key.materialCosts=Zeige Materialkosten
+key.itemDescriptor=Zeige Gegenstandsdeskriptor
+key.copyItemDescriptor=Kopiere Gegenstandsdeskriptor in die Zwischenablage
